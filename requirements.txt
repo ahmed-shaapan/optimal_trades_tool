@@ -4,3 +4,5 @@ dash-html-components
 plotly
 pandas
 gunicorn
+SQLAlchemy
+psycopg2-binary

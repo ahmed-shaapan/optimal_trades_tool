@@ -80,6 +80,36 @@ h1, h3 {
 .button-primary:hover {
     background-color: #357ABD;
 }
+.button2-primary {
+    background-color: #e24a4a; /* Professional Blue */
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease;
+}
+
+.button2-primary:hover {
+    background-color: #bd3535;
+}
+.button-secondary {
+    background-color: #136147; /* Professional Blue */
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background-color 0.2s ease;
+}
+
+.button-secondary:hover {
+    background-color: #13805b;
+}
 
 #buy-button, #sell-button {
     background-color: #FFFFFF;

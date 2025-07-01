@@ -3,12 +3,35 @@ from dash import dcc, html, Input, Output, State, callback_context, dash_table
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
+import sqlalchemy
 import os
-from data_utils import load_stock_data, load_benchmark_data
+
+# --- Database Setup ---
+# It's recommended to use environment variables for database credentials
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/stock_data')
+engine = sqlalchemy.create_engine(DATABASE_URL)
+
+def load_data_from_db():
+    """
+    Loads all stock and benchmark data from the database.
+    """
+    with engine.connect() as connection:
+        # Load all data, as we need QQQ for benchmark calculations later
+        query = "SELECT * FROM stock_data"
+        df = pd.read_sql(query, connection, index_col='id')
+        df['Date'] = pd.to_datetime(df['Date'], utc=True)
+        
+        # Separate benchmark data (QQQ)
+        benchmark_data = df[df['ticker'] == 'QQQ'].copy()
+        
+        # Separate stock data (excluding QQQ)
+        stock_data = df[df['ticker'] != 'QQQ'].copy()
+        
+    return stock_data, benchmark_data
 
 # Load data
-stock_data = load_stock_data('stock_data')
-benchmark_data = load_benchmark_data('stock_data')
+stock_data, benchmark_data = load_data_from_db()
+
 
 # --- UI Enhancements ---
 # Color palette for tickers
@@ -24,11 +47,6 @@ ticker_color_map = {ticker: TICKER_COLORS[i % len(TICKER_COLORS)] for i, ticker 
 app = dash.Dash(__name__, external_stylesheets=['/assets/styles.css'])
 
 app.layout = html.Div([
-    # Left-side Toolbar
-    html.Div([
-        html.Button('ƒ', id='indicator-button', className='toolbar-button')
-    ], className='toolbar'),
-
     # Main Content Area
     html.Div([
         html.H1('Financial Analysis Tool'),
@@ -39,91 +57,246 @@ app.layout = html.Div([
             value=stock_data['ticker'].unique()[0]
         ),
         
+        html.Div([
+            html.H4('Technical Indicators', style={'margin-top': '20px', 'margin-bottom': '10px'}),
+            dcc.Checklist(
+                id='indicator-checklist',
+                options=[
+                    {'label': 'Bollinger Bands', 'value': 'bb'},
+                    {'label': 'RSI', 'value': 'rsi'},
+                    {'label': 'MACD', 'value': 'macd'},
+                    {'label': 'Ichimoku Cloud', 'value': 'ichimoku'},
+                    {'label': 'ADX', 'value': 'adx'},
+                    {'label': 'Parabolic SAR', 'value': 'psar'},
+                    {'label': 'Donchian Channels', 'value': 'donchian'},
+                    {'label': 'Rate of Change', 'value': 'roc'},
+                    {'label': 'Elliott Wave Oscillator', 'value': 'ewo'},
+                ],
+                value=[],
+                labelStyle={'display': 'inline-block', 'margin-right': '15px', 'cursor': 'pointer'},
+                style={'padding-bottom': '15px', 'border-bottom': '1px solid #ddd'}
+            ),
+        ], style={'textAlign': 'center'}),
+
         dcc.Graph(id='stock-graph'),
         
         html.Div([
             html.Button('Buy Signal', id='buy-button', n_clicks=0, style={'margin-right': '10px'}),
             html.Button('Sell Signal', id='sell-button', n_clicks=0, style={'margin-right': '10px'}),
-            html.Button('Save Signals', id='save-button', n_clicks=0, className='button-primary'),
-        ], style={'textAlign': 'center', 'padding': '20px'}),
+            html.Button('Remove Last Signal', id='remove-last-button', n_clicks=0, className='button2-primary', style={'margin-right': '10px'}),
+        ], style={'textAlign': 'center', 'padding': '20px', 'margin-top': '50px'}),
         
         html.Div(id='selected-point-info', style={'margin-top': '10px', 'textAlign': 'center'}),
         html.Div(id='save-status', style={'margin-top': '10px', 'textAlign': 'center'}),
+        html.Div(id='trade-profitability-status', style={'margin-top': '10px', 'textAlign': 'center', 'fontWeight': 'bold'}),
 
-        html.H3('Selected Signals', style={'textAlign': 'center'}),
-        dash_table.DataTable(
-            id='signals-table',
-            columns=[
-                {'name': 'Date', 'id': 'Date'},
-                {'name': 'Ticker', 'id': 'ticker'},
-                {'name': 'Close', 'id': 'Close', 'type': 'numeric', 'format': {'specifier': '$,.2f'}},
-                {'name': 'Signal', 'id': 'signal'},
-            ],
-            data=[],
-            style_table={
-                'height': '300px',
-                'overflowY': 'auto',
-                'width': '920px',
-                'margin': '0 auto',
-                'borderRadius': '18px',
-                'boxShadow': '0 2px 12px rgba(0,0,0,0.07)'
-            },
-            style_cell={
-                'textAlign': 'center',
-                'fontWeight': 'bold',
-                'border': 'none',
-                'fontSize': '16px',
-                'padding': '10px 0',
-            },
-            style_header={
-                'backgroundColor': '#fff',
-                'fontWeight': 'bold',
-                'fontSize': '20px',
-                'textAlign': 'center',
-                'border': 'none',
-            },
-            style_data_conditional=[],
-            fixed_rows={'headers': True}
-        ),
+        html.Div([
+            html.Div([
+                html.H3('Selected Signals', style={'textAlign': 'center'}),
+                dash_table.DataTable(
+                    id='signals-table',
+                    columns=[
+                        {'name': 'Date', 'id': 'Date'},
+                        {'name': 'Ticker', 'id': 'ticker'},
+                        {'name': 'Close', 'id': 'Close', 'type': 'numeric', 'format': {'specifier': '$,.2f'}},
+                        {'name': 'Signal', 'id': 'signal'},
+                    ],
+                    data=[],
+                    row_deletable=True,
+                    style_table={
+                        'height': '300px',
+                        'overflowY': 'auto',
+                        'width': '100%',
+                        'borderRadius': '18px',
+                        'boxShadow': '0 2px 12px rgba(0,0,0,0.07)'
+                    },
+                    style_cell={
+                        'textAlign': 'center',
+                        'fontWeight': 'bold',
+                        'border': 'none',
+                        'fontSize': '16px',
+                        'padding': '10px 0',
+                    },
+                    style_header={
+                        'backgroundColor': '#fff',
+                        'fontWeight': 'bold',
+                        'fontSize': '20px',
+                        'textAlign': 'center',
+                        'border': 'none',
+                    },
+                    style_data_conditional=[],
+                    fixed_rows={'headers': True}
+                ),
+            ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top', 'marginRight': '2%'}),
+            
+            html.Div([
+                html.H3('Profitable Trades', style={'textAlign': 'center'}),
+                dash_table.DataTable(
+                    id='profitable-trades-table',
+                    columns=[
+                        {'name': 'Ticker', 'id': 'Ticker'},
+                        {'name': 'Buy Date', 'id': 'buy_date'},
+                        {'name': 'Buy Price', 'id': 'price_at_buy', 'type': 'numeric', 'format': {'specifier': '$,.2f'}},
+                        {'name': 'Sell Date', 'id': 'sell_date'},
+                        {'name': 'Sell Price', 'id': 'price_at_sell', 'type': 'numeric', 'format': {'specifier': '$,.2f'}},
+                        {'name': 'Return %', 'id': 'return_pct', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                        {'name': 'Benchmark Return %', 'id': 'NSDAQ100etf_return_pct', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                    ],
+                    data=[],
+                    style_table={
+                        'height': '300px',
+                        'overflowY': 'auto',
+                        'width': '100%',
+                        'borderRadius': '18px',
+                        'boxShadow': '0 2px 12px rgba(0,0,0,0.07)'
+                    },
+                    style_cell={
+                        'textAlign': 'center',
+                        'fontWeight': 'bold',
+                        'border': 'none',
+                        'fontSize': '16px',
+                        'padding': '10px 0',
+                    },
+                    style_header={
+                        'backgroundColor': '#fff',
+                        'fontWeight': 'bold',
+                        'fontSize': '20px',
+                        'textAlign': 'center',
+                        'border': 'none',
+                    },
+                ),
+            ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top', 'marginLeft': '2%'})
+        ], style={'display': 'flex', 'flexDirection': 'row', 'width': '100%'}),
 
-        dcc.Store(id='signals-storage', data=[])
+
+        dcc.Store(id='signals-storage', data=[]),
+        dcc.Store(id='profitable-trades-storage', data=[]),
+
     ], className='main-content')
 ], className='app-container')
 
 @app.callback(
     Output('stock-graph', 'figure'),
     Input('ticker-dropdown', 'value'),
-    Input('signals-storage', 'data')
+    Input('signals-storage', 'data'), # Kept for compatibility but not used for drawing
+    Input('indicator-checklist', 'value')
 )
-def update_graph(selected_ticker, signals):
+def update_graph(selected_ticker, signals, selected_indicators):
     df = stock_data[stock_data['ticker'] == selected_ticker].copy()
     df.sort_values('Date', inplace=True)
 
-    # Calculate 50-day SMA
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    # --- TradingView Style Implementation ---
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                          vertical_spacing=0.03, 
-                          row_heights=[0.7, 0.3])
+    # 1. Define TradingView colors
+    INCREASING_COLOR = '#26a69a'
+    DECREASING_COLOR = '#ef5350'
+    GRID_COLOR = '#EAEAEA'
 
-    # Price Pane
+    # 2. Determine number of rows needed for indicators
+    indicator_rows = [ind for ind in ['rsi', 'macd', 'adx', 'roc', 'ewo'] if ind in selected_indicators]
+    num_rows = 2 + len(indicator_rows)
+    row_heights = [0.7] + [0.15] * (len(indicator_rows) + 1) # Main chart, volume, then indicators
+
+    specs = [[{"secondary_y": False}], [{"secondary_y": False}]] # Price and Volume panes
+    for _ in indicator_rows:
+        specs.append([{"secondary_y": False}]) # Indicator panes
+
+    fig = make_subplots(rows=num_rows, cols=1, shared_xaxes=True,
+                          vertical_spacing=0.02,
+                          row_heights=row_heights,
+                          specs=specs)
+
+    # 3. Add Candlestick Trace (Price Pane - Row 1)
     fig.add_trace(go.Candlestick(x=df['Date'],
                                    open=df['Open'],
                                    high=df['High'],
                                    low=df['Low'],
                                    close=df['Close'],
-                                   increasing_line_color='#00b0b9', 
-                                   decreasing_line_color='#ef5350',
-                                   name='Price'), row=1, col=1)
+                                   name='Price',
+                                   increasing_fillcolor=INCREASING_COLOR,
+                                   increasing_line_color=INCREASING_COLOR,
+                                   decreasing_fillcolor=DECREASING_COLOR,
+                                   decreasing_line_color=DECREASING_COLOR),
+                  row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=df['Date'], y=df['SMA_50'], 
-                             mode='lines', name='SMA 50', 
-                             line=dict(color='blue', width=1)), row=1, col=1)
+    # Add price-based indicators to Price Pane
+    if 'bb' in selected_indicators and all(c in df.columns for c in ['bb_upper', 'bb_lower', 'bb_middle']):
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['bb_upper'], mode='lines', name='BB Upper', line=dict(color='gray', width=1, dash='dash')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['bb_lower'], mode='lines', name='BB Lower', line=dict(color='gray', width=1, dash='dash')), row=1, col=1)
+    if 'ichimoku' in selected_indicators and all(c in df.columns for c in ['ichimoku_senkou_a', 'ichimoku_senkou_b']):
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['ichimoku_senkou_a'], mode='lines', name='Ichimoku A', line=dict(color='rgba(0, 255, 0, 0.2)')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['ichimoku_senkou_b'], mode='lines', name='Ichimoku B', line=dict(color='rgba(255, 0, 0, 0.2)'), fill='tonexty'), row=1, col=1)
+    if 'psar' in selected_indicators and 'psar' in df.columns:
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['psar'], mode='markers', name='Parabolic SAR', marker=dict(color='purple', size=4)), row=1, col=1)
+    if 'donchian' in selected_indicators and all(c in df.columns for c in ['donchian_upper', 'donchian_lower']):
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['donchian_upper'], mode='lines', name='Donchian Upper', line=dict(color='cyan', width=1, dash='dash')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['donchian_lower'], mode='lines', name='Donchian Lower', line=dict(color='cyan', width=1, dash='dash')), row=1, col=1)
 
-    # Volume Pane
-    colors = ['#00b0b9' if row['Close'] >= row['Open'] else '#ef5350' for index, row in df.iterrows()]
-    fig.add_trace(go.Bar(x=df['Date'], y=df['Volume'], 
-                         marker_color=colors, name='Volume'), row=2, col=1)
+
+    # 4. Add Volume Bar Trace (Volume Pane - Row 2)
+    volume_colors = [INCREASING_COLOR if row['Close'] >= row['Open'] else DECREASING_COLOR for index, row in df.iterrows()]
+    fig.add_trace(go.Bar(x=df['Date'], y=df['Volume'],
+                         marker_color=volume_colors,
+                         name='Volume'),
+                  row=2, col=1)
+
+    # 5. Add Indicator Traces (Rows 3+)
+    current_row = 3
+    for indicator in indicator_rows:
+        if indicator == 'rsi' and 'rsi' in df.columns:
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['rsi'], mode='lines', name='RSI'), row=current_row, col=1)
+            fig.update_yaxes(title_text="RSI", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
+        elif indicator == 'macd' and all(c in df.columns for c in ['macd_line', 'macd_signal', 'macd_histogram']):
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['macd_line'], mode='lines', name='MACD Line'), row=current_row, col=1)
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['macd_signal'], mode='lines', name='MACD Signal'), row=current_row, col=1)
+            fig.add_trace(go.Bar(x=df['Date'], y=df['macd_histogram'], name='MACD Hist'), row=current_row, col=1)
+            fig.update_yaxes(title_text="MACD", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
+        elif indicator == 'adx' and 'adx' in df.columns:
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['adx'], mode='lines', name='ADX'), row=current_row, col=1)
+            fig.update_yaxes(title_text="ADX", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
+        elif indicator == 'roc' and 'roc' in df.columns:
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['roc'], mode='lines', name='ROC'), row=current_row, col=1)
+            fig.update_yaxes(title_text="ROC", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
+        elif indicator == 'ewo' and 'elliott_wave_oscillator' in df.columns:
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['elliott_wave_oscillator'], mode='lines', name='EWO'), row=current_row, col=1)
+            fig.update_yaxes(title_text="EWO", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
+        current_row += 1
+
+
+    # 6. Update the overall layout to match TradingView
+    fig.update_layout(
+        height=800,
+        xaxis_rangeslider_visible=False,
+        showlegend=False,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=10, r=50, t=10, b=10)
+    )
+
+    # 7. Update Y-Axes styles
+    fig.update_yaxes(
+        side='right',
+        tickfont=dict(size=12, color='#333'),
+        gridcolor=GRID_COLOR,
+        row=1, col=1
+    )
+    fig.update_yaxes(
+        showticklabels=False, # Hide volume axis labels
+        gridcolor=GRID_COLOR,
+        row=2, col=1
+    )
+
+    # 8. Update X-Axis style for all panes
+    fig.update_xaxes(
+        gridcolor=GRID_COLOR,
+        tickfont=dict(size=12, color='#787878'),
+        showticklabels=True # Ensure x-axis labels are visible on the bottom pane
+    )
+    
+    # Hide x-axis labels on all but the bottom chart
+    for i in range(1, num_rows):
+        fig.update_xaxes(showticklabels=False, row=i, col=1)
+
 
     # Add annotations for signals
     annotations = []
@@ -136,22 +309,13 @@ def update_graph(selected_ticker, signals):
                     annotations.append(dict(x=signal_date, 
                                             y=signal_df.iloc[0]['Low'], 
                                             text="B", showarrow=True, arrowhead=2, 
-                                            ax=0, ay=20, bgcolor="#00b0b9"))
+                                            ax=0, ay=20, bgcolor="#26a69a"))
                 elif signal['signal'] == 'sell':
                     annotations.append(dict(x=signal_date, 
                                             y=signal_df.iloc[0]['High'], 
                                             text="S", showarrow=True, arrowhead=2, 
                                             ax=0, ay=-20, bgcolor="#ef5350"))
     fig.update_layout(annotations=annotations)
-
-    fig.update_layout(
-        title=f'{selected_ticker} Price and Volume',
-        yaxis_title='Price',
-        xaxis_rangeslider_visible=False,
-        template='plotly_white',
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
 
     return fig
 
@@ -169,16 +333,39 @@ def display_click_data(clickData):
 
 @app.callback(
     Output('signals-storage', 'data'),
+    Output('trade-profitability-status', 'children'),
+    Output('profitable-trades-storage', 'data'),
     Input('buy-button', 'n_clicks'),
     Input('sell-button', 'n_clicks'),
+    Input('remove-last-button', 'n_clicks'),
+    Input('signals-table', 'data_previous'),
     State('stock-graph', 'clickData'),
     State('ticker-dropdown', 'value'),
-    State('signals-storage', 'data')
+    State('signals-storage', 'data'),
+    State('profitable-trades-storage', 'data')
 )
-def store_signal(buy_clicks, sell_clicks, clickData, selected_ticker, existing_signals):
+def update_signals(buy_clicks, sell_clicks, remove_clicks, table_data_previous, clickData, selected_ticker, existing_signals, profitable_trades):
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
-    if not clickData:
-        return existing_signals
+    profitability_status = ""
+    
+    if 'remove-last-button' in changed_id:
+        if existing_signals:
+            # Find the last signal for the current ticker and remove it
+            for i in range(len(existing_signals) - 1, -1, -1):
+                if existing_signals[i]['ticker'] == selected_ticker:
+                    existing_signals.pop(i)
+                    break
+        return existing_signals, profitability_status, profitable_trades
+
+    if table_data_previous is not None and len(existing_signals) > len(table_data_previous):
+        # A row was deleted from the table by the user
+        # The new data is the current state of the table
+        current_dates = {row['Date'] for row in table_data_previous}
+        existing_signals = [s for s in existing_signals if s['Date'] in current_dates]
+
+
+    if not clickData or ('buy-button' not in changed_id and 'sell-button' not in changed_id):
+        return existing_signals, profitability_status, profitable_trades
 
     point = clickData['points'][0]
     date = point['x']
@@ -187,15 +374,15 @@ def store_signal(buy_clicks, sell_clicks, clickData, selected_ticker, existing_s
     last_signal_for_ticker = None
     for s in reversed(existing_signals):
         if s['ticker'] == selected_ticker:
-            last_signal_for_ticker = s['signal']
+            last_signal_for_ticker = s
             break
 
     signal_type = None
     if 'buy-button' in changed_id:
-        if last_signal_for_ticker is None or last_signal_for_ticker == 'sell':
+        if last_signal_for_ticker is None or last_signal_for_ticker['signal'] == 'sell':
             signal_type = 'buy'
     elif 'sell-button' in changed_id:
-        if last_signal_for_ticker == 'buy':
+        if last_signal_for_ticker and last_signal_for_ticker['signal'] == 'buy':
             signal_type = 'sell'
 
     if signal_type:
@@ -203,7 +390,50 @@ def store_signal(buy_clicks, sell_clicks, clickData, selected_ticker, existing_s
         signal_data['signal'] = signal_type
         existing_signals.append(signal_data)
 
-    return existing_signals
+        if signal_type == 'sell':
+            # Check for profitability
+            buy_signal = last_signal_for_ticker
+            sell_signal = signal_data
+
+            buy_date = pd.to_datetime(buy_signal['Date'])
+            sell_date = pd.to_datetime(sell_signal['Date'])
+            price_at_buy = buy_signal['Close']
+            price_at_sell = sell_signal['Close']
+
+            # Stock return
+            return_value = price_at_sell - price_at_buy
+            return_pct = (return_value / price_at_buy) * 100
+
+            # Benchmark return
+            benchmark_buy_price = benchmark_data[benchmark_data['Date'] == buy_date]['Close'].iloc[0]
+            benchmark_sell_price = benchmark_data[benchmark_data['Date'] == sell_date]['Close'].iloc[0]
+            benchmark_return_value = benchmark_sell_price - benchmark_buy_price
+            benchmark_return_pct = (benchmark_return_value / benchmark_buy_price) * 100
+
+            if return_pct > benchmark_return_pct:
+                profitability_status = f"Profitable Trade! Return: {return_pct:.2f}% vs Benchmark: {benchmark_return_pct:.2f}%"
+                profitable_trades.append({
+                    'Ticker': selected_ticker,
+                    'buy_date': buy_date.strftime('%Y-%m-%d'),
+                    'price_at_buy': price_at_buy,
+                    'sell_date': sell_date.strftime('%Y-%m-%d'),
+                    'price_at_sell': price_at_sell,
+                    'return_value': return_value,
+                    'return_pct': return_pct,
+                    'NSDAQ100etf_buy_date': buy_date.strftime('%Y-%m-%d'),
+                    'NSDAQ100etf_price_at_buy': benchmark_buy_price,
+                    'NSDAQ100etf_sell_date': sell_date.strftime('%Y-%m-%d'),
+                    'NSDAQ100etf_price_at_sell': benchmark_sell_price,
+                    'NSDAQ100etf_return_value': benchmark_return_value,
+                    'NSDAQ100etf_return_pct': benchmark_return_pct
+                })
+            else:
+                profitability_status = f"Not a Profitable Trade. Return: {return_pct:.2f}% vs Benchmark: {benchmark_return_pct:.2f}%"
+            
+            return existing_signals, profitability_status, profitable_trades
+
+
+    return existing_signals, profitability_status, profitable_trades
 
 @app.callback(
     Output('signals-table', 'data'),
@@ -215,6 +445,7 @@ def update_signals_table(signals):
         return [], []
 
     df = pd.DataFrame(signals)
+    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
     table_data = df[['Date', 'ticker', 'Close', 'signal']].to_dict('records')
 
     styles = [
@@ -233,71 +464,11 @@ def update_signals_table(signals):
     return table_data, styles
 
 @app.callback(
-    Output('save-status', 'children'),
-    Output('signals-storage', 'data', allow_duplicate=True),
-    Input('save-button', 'n_clicks'),
-    State('signals-storage', 'data'),
-    prevent_initial_call=True
+    Output('profitable-trades-table', 'data'),
+    Input('profitable-trades-storage', 'data')
 )
-def save_signals(n_clicks, signals):
-    if n_clicks > 0 and signals:
-        # 1. Save raw signals
-        df_raw = pd.DataFrame(signals)
-        file_exists_raw = os.path.exists('annotated_signals.csv')
-        df_raw.to_csv('annotated_signals.csv', mode='a', header=not file_exists_raw, index=False)
-
-        # 2. Process for profitable trades
-        profitable_trades = []
-        signals_df = pd.DataFrame(signals).sort_values(by=['ticker', 'Date'])
-        
-        for ticker, ticker_signals in signals_df.groupby('ticker'):
-            last_buy_signal = None
-            for index, row in ticker_signals.iterrows():
-                if row['signal'] == 'buy':
-                    last_buy_signal = row
-                elif row['signal'] == 'sell' and last_buy_signal is not None:
-                    # Found a trade pair
-                    buy_date = pd.to_datetime(last_buy_signal['Date'])
-                    sell_date = pd.to_datetime(row['Date'])
-                    price_at_buy = last_buy_signal['Close']
-                    price_at_sell = row['Close']
-
-                    # Stock return
-                    return_value = price_at_sell - price_at_buy
-                    return_pct = (return_value / price_at_buy) * 100
-
-                    # Benchmark return
-                    benchmark_buy_price = benchmark_data[benchmark_data['Date'] == buy_date]['Close'].iloc[0]
-                    benchmark_sell_price = benchmark_data[benchmark_data['Date'] == sell_date]['Close'].iloc[0]
-                    benchmark_return_value = benchmark_sell_price - benchmark_buy_price
-                    benchmark_return_pct = (benchmark_return_value / benchmark_buy_price) * 100
-
-                    if return_pct > benchmark_return_pct:
-                        profitable_trades.append({
-                            'Ticker': ticker,
-                            'buy_date': buy_date,
-                            'price_at_buy': price_at_buy,
-                            'sell_date': sell_date,
-                            'price_at_sell': price_at_sell,
-                            'return_value': return_value,
-                            'return_pct': return_pct,
-                            'NSDAQ100etf_buy_date': buy_date,
-                            'NSDAQ100etf_price_at_buy': benchmark_buy_price,
-                            'NSDAQ100etf_sell_date': sell_date,
-                            'NSDAQ100etf_price_at_sell': benchmark_sell_price,
-                            'NSDAQ100etf_return_value': benchmark_return_value,
-                            'NSDAQ100etf_return_pct': benchmark_return_pct
-                        })
-                    
-                    last_buy_signal = None # Reset for next trade
-
-        if profitable_trades:
-            df_profitable = pd.DataFrame(profitable_trades)
-            file_exists_profitable = os.path.exists('profitable_trades.csv')
-            df_profitable.to_csv('profitable_trades.csv', mode='a', header=not file_exists_profitable, index=False)
-
-        return "Signals saved and profitable trades analyzed.", []
-    return "", dash.no_update
+def update_profitable_trades_table(trades):
+    return trades
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run_server(debug=True)
