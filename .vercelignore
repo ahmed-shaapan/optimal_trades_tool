@@ -1,0 +1,25 @@
+# Ignore Python virtual environment
+.venv/
+virtualenv/
+env/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore IDE/editor-specific files
+.vscode/
+.idea/
+
+# Ignore local data and assets that are not needed for the final build
+*.csv
+stock_data/
+
+# Ignore git files
+.git/
+.gitignore
+
+# Ignore other common files
+.DS_Store
