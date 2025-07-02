@@ -4,23 +4,18 @@
     {
       "src": "app.py",
       "use": "@vercel/python",
-      "config": { "maxLambdaSize": "15mb", "runtime": "python3.9" }
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
     }
   ],
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "api/tech_data.py"
-    },
     {
       "src": "/(.*)",
       "dest": "app.py"
     }
   ],
-  "crons": [
-    {
-      "path": "/api/tech_data",
-      "schedule": "0 5 * * *"
-    }
-  ]
+  "env": {
+    "PYTHON_VERSION": "3.13"
+  }
 }

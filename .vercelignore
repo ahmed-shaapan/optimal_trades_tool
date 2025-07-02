@@ -2,7 +2,8 @@
 .venv/
 virtualenv/
 env/
-
+./tradingo
+venv/
 # Ignore Python cache files
 __pycache__/
 *.pyc
@@ -23,3 +24,4 @@ stock_data/
 
 # Ignore other common files
 .DS_Store
+run_daily_update.bat

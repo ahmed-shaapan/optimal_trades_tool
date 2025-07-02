@@ -1,8 +1,7 @@
 dash
-dash-core-components
-dash-html-components
 plotly
 pandas
-gunicorn
+numpy
 SQLAlchemy
 psycopg2-binary
+python-dotenv

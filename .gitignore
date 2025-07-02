@@ -1,1 +1,4 @@
 .vercel
+.tradingo/
+.venv/
+run_daily_update.bat

@@ -5,33 +5,36 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import sqlalchemy
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- Database Setup ---
-# It's recommended to use environment variables for database credentials
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/stock_data')
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set. Make sure you have a .env file.")
+
+# Fix for deprecated postgres:// URL format
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
 engine = sqlalchemy.create_engine(DATABASE_URL)
 
-def load_data_from_db():
-    """
-    Loads all stock and benchmark data from the database.
-    """
+# --- Data Loading Function ---
+def load_tickers():
     with engine.connect() as connection:
-        # Load all data, as we need QQQ for benchmark calculations later
-        query = "SELECT * FROM stock_data"
-        df = pd.read_sql(query, connection, index_col='id')
+        query = "SELECT DISTINCT symbol FROM stock_data WHERE symbol != 'QQQ'"
+        tickers = pd.read_sql(query, connection)['symbol'].tolist()
+        return tickers
+
+def load_data_for_ticker(ticker):
+    with engine.connect() as connection:
+        query = sqlalchemy.text("SELECT * FROM stock_data WHERE symbol = :ticker OR symbol = 'QQQ'")
+        df = pd.read_sql(query, connection, params={'ticker': ticker}, index_col='id')
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
         
-        # Separate benchmark data (QQQ)
-        benchmark_data = df[df['ticker'] == 'QQQ'].copy()
-        
-        # Separate stock data (excluding QQQ)
-        stock_data = df[df['ticker'] != 'QQQ'].copy()
-        
-    return stock_data, benchmark_data
-
-# Load data
-stock_data, benchmark_data = load_data_from_db()
-
+        stock_data = df[df['symbol'] == ticker].copy()
+        benchmark_data = df[df['symbol'] == 'QQQ'].copy()
+        return stock_data, benchmark_data
 
 # --- UI Enhancements ---
 # Color palette for tickers
@@ -40,11 +43,14 @@ TICKER_COLORS = [
     '#FFF0F5', '#F0F8FF', '#FAEBD7', '#F5FFFA', '#FFFACD'
 ]
 
-unique_tickers = stock_data['ticker'].unique()
+unique_tickers = load_tickers()
+if not unique_tickers:
+    raise ValueError("No tickers found in the database. Please run tech_data.py to populate it.")
 ticker_color_map = {ticker: TICKER_COLORS[i % len(TICKER_COLORS)] for i, ticker in enumerate(unique_tickers)}
 
 # App initialization
-app = dash.Dash(__name__, external_stylesheets=['/assets/styles.css'])
+app = dash.Dash(__name__)
+server = app.server  # This is crucial for Vercel deployment
 
 app.layout = html.Div([
     # Main Content Area
@@ -53,8 +59,8 @@ app.layout = html.Div([
         
         dcc.Dropdown(
             id='ticker-dropdown',
-            options=[{'label': ticker, 'value': ticker} for ticker in stock_data['ticker'].unique()],
-            value=stock_data['ticker'].unique()[0]
+            options=[{'label': ticker, 'value': ticker} for ticker in unique_tickers],
+            value=unique_tickers[0]
         ),
         
         html.Div([
@@ -83,7 +89,7 @@ app.layout = html.Div([
         html.Div([
             html.Button('Buy Signal', id='buy-button', n_clicks=0, style={'margin-right': '10px'}),
             html.Button('Sell Signal', id='sell-button', n_clicks=0, style={'margin-right': '10px'}),
-            html.Button('Remove Last Signal', id='remove-last-button', n_clicks=0, className='button2-primary', style={'margin-right': '10px'}),
+            html.Button('Remove Last Signal', id='remove-last-button', n_clicks=0, style={'margin-right': '10px'}),
         ], style={'textAlign': 'center', 'padding': '20px', 'margin-top': '50px'}),
         
         html.Div(id='selected-point-info', style={'margin-top': '10px', 'textAlign': 'center'}),
@@ -168,7 +174,6 @@ app.layout = html.Div([
             ], style={'width': '48%', 'display': 'inline-block', 'verticalAlign': 'top', 'marginLeft': '2%'})
         ], style={'display': 'flex', 'flexDirection': 'row', 'width': '100%'}),
 
-
         dcc.Store(id='signals-storage', data=[]),
         dcc.Store(id='profitable-trades-storage', data=[]),
 
@@ -178,11 +183,12 @@ app.layout = html.Div([
 @app.callback(
     Output('stock-graph', 'figure'),
     Input('ticker-dropdown', 'value'),
-    Input('signals-storage', 'data'), # Kept for compatibility but not used for drawing
+    Input('signals-storage', 'data'),
     Input('indicator-checklist', 'value')
 )
 def update_graph(selected_ticker, signals, selected_indicators):
-    df = stock_data[stock_data['ticker'] == selected_ticker].copy()
+    # --- DATA IS NOW LOADED HERE ---
+    df, _ = load_data_for_ticker(selected_ticker)
     df.sort_values('Date', inplace=True)
 
     # --- TradingView Style Implementation ---
@@ -232,7 +238,6 @@ def update_graph(selected_ticker, signals, selected_indicators):
         fig.add_trace(go.Scatter(x=df['Date'], y=df['donchian_upper'], mode='lines', name='Donchian Upper', line=dict(color='cyan', width=1, dash='dash')), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['Date'], y=df['donchian_lower'], mode='lines', name='Donchian Lower', line=dict(color='cyan', width=1, dash='dash')), row=1, col=1)
 
-
     # 4. Add Volume Bar Trace (Volume Pane - Row 2)
     volume_colors = [INCREASING_COLOR if row['Close'] >= row['Open'] else DECREASING_COLOR for index, row in df.iterrows()]
     fig.add_trace(go.Bar(x=df['Date'], y=df['Volume'],
@@ -261,7 +266,6 @@ def update_graph(selected_ticker, signals, selected_indicators):
             fig.add_trace(go.Scatter(x=df['Date'], y=df['elliott_wave_oscillator'], mode='lines', name='EWO'), row=current_row, col=1)
             fig.update_yaxes(title_text="EWO", side='right', gridcolor=GRID_COLOR, row=current_row, col=1)
         current_row += 1
-
 
     # 6. Update the overall layout to match TradingView
     fig.update_layout(
@@ -296,7 +300,6 @@ def update_graph(selected_ticker, signals, selected_indicators):
     # Hide x-axis labels on all but the bottom chart
     for i in range(1, num_rows):
         fig.update_xaxes(showticklabels=False, row=i, col=1)
-
 
     # Add annotations for signals
     annotations = []
@@ -345,6 +348,9 @@ def display_click_data(clickData):
     State('profitable-trades-storage', 'data')
 )
 def update_signals(buy_clicks, sell_clicks, remove_clicks, table_data_previous, clickData, selected_ticker, existing_signals, profitable_trades):
+    # --- DATA IS NOW LOADED HERE ---
+    stock_data, benchmark_data = load_data_for_ticker(selected_ticker)
+    
     changed_id = [p['prop_id'] for p in callback_context.triggered][0]
     profitability_status = ""
     
@@ -362,7 +368,6 @@ def update_signals(buy_clicks, sell_clicks, remove_clicks, table_data_previous, 
         # The new data is the current state of the table
         current_dates = {row['Date'] for row in table_data_previous}
         existing_signals = [s for s in existing_signals if s['Date'] in current_dates]
-
 
     if not clickData or ('buy-button' not in changed_id and 'sell-button' not in changed_id):
         return existing_signals, profitability_status, profitable_trades
@@ -432,7 +437,6 @@ def update_signals(buy_clicks, sell_clicks, remove_clicks, table_data_previous, 
             
             return existing_signals, profitability_status, profitable_trades
 
-
     return existing_signals, profitability_status, profitable_trades
 
 @app.callback(
@@ -470,5 +474,6 @@ def update_signals_table(signals):
 def update_profitable_trades_table(trades):
     return trades
 
+# This is required for Vercel
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run_server(debug=False)
